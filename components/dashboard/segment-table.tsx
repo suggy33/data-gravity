@@ -11,7 +11,7 @@ import {
   TableRow,
 } from "@/components/ui/table"
 import { Sparkles } from "lucide-react"
-import type { Segment } from "@/app/dashboard/page"
+import type { Segment } from "@/lib/dashboard/types"
 
 interface SegmentTableProps {
   segments: Segment[]

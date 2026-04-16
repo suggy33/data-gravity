@@ -10,7 +10,7 @@ import {
   SheetTitle,
 } from "@/components/ui/sheet"
 import { Sparkles, Send, Mail, MessageSquare, Target } from "lucide-react"
-import type { Segment } from "@/app/dashboard/page"
+import type { Segment } from "@/lib/dashboard/types"
 
 interface StrategyDrawerProps {
   open: boolean
