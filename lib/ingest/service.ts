@@ -90,17 +90,19 @@ const parseCsv = (csvText: string): string[][] => {
 
   pushCell()
   pushRow()
-  return rows.filter((entry) => entry.length > 0)
+  return rows.filter((entry) => entry.some((cell) => cell.trim() !== ""))
 }
 
 const rowsToData = (headers: string[], rows: string[][]): DataRow[] => {
-  return rows.map((row) => {
+  return rows
+    .filter((row) => row.some((cell) => cell.trim() !== ""))
+    .map((row) => {
     const record: DataRow = {}
     headers.forEach((header, index) => {
       record[header] = parsePrimitive(row[index] ?? "")
     })
     return record
-  })
+    })
 }
 
 const summarizeSchema = (

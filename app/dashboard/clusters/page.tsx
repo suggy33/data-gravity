@@ -1,7 +1,7 @@
 "use client"
 
 import { useEffect, useMemo, useState } from "react"
-import { DashboardHeader } from "@/components/dashboard/header"
+import { DashboardHeader, DASHBOARD_REFRESH_EVENT } from "@/components/dashboard/header"
 import { ClusterScatterPlot } from "@/components/dashboard/cluster-scatter-plot"
 import { SegmentTable } from "@/components/dashboard/segment-table"
 import { StrategyDrawer } from "@/components/dashboard/strategy-drawer"
@@ -45,6 +45,7 @@ export default function ClustersPage() {
   const [totalCost, setTotalCost] = useState<number | null>(null)
   const [isRunning, setIsRunning] = useState(false)
   const [error, setError] = useState<string | null>(null)
+  const [projectionPoints, setProjectionPoints] = useState<Array<{ x: number; y: number; label: number }> | undefined>()
 
   const totalCustomers = useMemo(
     () => segments.reduce((acc, segment) => acc + segment.customerCount, 0),
@@ -70,10 +71,11 @@ export default function ClustersPage() {
 
     setRunId(payload.run.id)
     setSegments(mapTrainingToSegments(training))
-    setSilhouette(evaluation.silhouetteScore)
-    setTopFeatures(evaluation.topDifferentiatingFeatures)
-    setDistribution(evaluation.clusterSizeDistribution)
+    setSilhouette(evaluation.silhouetteScore ?? null)
+    setTopFeatures(evaluation.topDifferentiatingFeatures ?? [])
+    setDistribution(evaluation.clusterSizeDistribution ?? [])
     setTotalCost(payload.costSummary.totalCost)
+    setProjectionPoints(training.projection2d)
   }
 
   const loadLatestRun = async () => {
@@ -102,6 +104,9 @@ export default function ClustersPage() {
 
   useEffect(() => {
     void loadLatestRun()
+    const onRefresh = () => void loadLatestRun()
+    window.addEventListener(DASHBOARD_REFRESH_EVENT, onRefresh)
+    return () => window.removeEventListener(DASHBOARD_REFRESH_EVENT, onRefresh)
   }, [])
 
   const loadRunById = async () => {
@@ -179,11 +184,20 @@ export default function ClustersPage() {
             <CardHeader>
               <CardTitle className="text-foreground">Cluster Distribution</CardTitle>
               <CardDescription className="text-muted-foreground">
-                Visual segmentation scatter.
+                Visual segmentation by customer count and value.
               </CardDescription>
             </CardHeader>
             <CardContent>
-              <ClusterScatterPlot />
+              <ClusterScatterPlot
+                segments={segments.map((s) => ({
+                  segmentId: s.id,
+                  name: s.clusterName,
+                  size: s.customerCount,
+                  engagementScore: Math.min(100, Math.max(0, Math.round((s.avgLtv - 50) / 4.5))),
+                  risk: s.churnRisk,
+                }))}
+                projectionPoints={projectionPoints}
+              />
             </CardContent>
           </Card>
 
@@ -191,7 +205,7 @@ export default function ClustersPage() {
             <CardHeader>
               <CardTitle className="text-foreground">Generated Segments</CardTitle>
               <CardDescription className="text-muted-foreground">
-                Stage output from training.
+                Customer counts, lifetime value, and churn risk.
               </CardDescription>
             </CardHeader>
             <CardContent>
@@ -208,28 +222,52 @@ export default function ClustersPage() {
           <Card className="border-border bg-card/50 backdrop-blur-sm">
             <CardHeader>
               <CardTitle className="text-foreground">Cluster Size Distribution</CardTitle>
+              <CardDescription className="text-muted-foreground">Dynamic bars based on customer counts per cluster.</CardDescription>
             </CardHeader>
-            <CardContent className="space-y-2 text-sm text-muted-foreground">
-              {!distribution.length && <p>No distribution data available yet.</p>}
-              {distribution.map((entry) => (
-                <div key={entry.segmentId} className="flex items-center justify-between rounded-md border border-border p-2">
-                  <span>{entry.segmentId}</span>
-                  <span>{entry.size} ({(entry.ratio * 100).toFixed(1)}%)</span>
-                </div>
-              ))}
+            <CardContent className="space-y-4">
+              {!segments.length && <p className="text-sm text-muted-foreground">No clusters yet.</p>}
+              {segments.map((seg) => {
+                const maxSize = Math.max(...segments.map((s) => s.customerCount), 1)
+                const percentage = (seg.customerCount / maxSize) * 100
+                return (
+                  <div key={seg.id} className="space-y-1">
+                    <div className="flex items-center justify-between text-sm">
+                      <span className="font-medium text-foreground">{seg.clusterName}</span>
+                      <span className="text-xs text-muted-foreground">{seg.customerCount} customers</span>
+                    </div>
+                    <div className="h-2 w-full rounded-full bg-muted overflow-hidden">
+                      <div
+                        className={`h-full rounded-full transition-all ${
+                          seg.churnRisk === "low" ? "bg-emerald-500" : seg.churnRisk === "medium" ? "bg-amber-500" : "bg-red-500"
+                        }`}
+                        style={{ width: `${percentage}%` }}
+                      />
+                    </div>
+                  </div>
+                )
+              })}
             </CardContent>
           </Card>
 
           <Card className="border-border bg-card/50 backdrop-blur-sm">
             <CardHeader>
               <CardTitle className="text-foreground">Top Differentiating Features</CardTitle>
+              <CardDescription className="text-muted-foreground">Most influential factors in clustering.</CardDescription>
             </CardHeader>
-            <CardContent className="space-y-2 text-sm text-muted-foreground">
-              {!topFeatures.length && <p>No feature importance available yet.</p>}
-              {topFeatures.map((feature) => (
-                <div key={feature.feature} className="flex items-center justify-between rounded-md border border-border p-2">
-                  <span>{feature.feature}</span>
-                  <span>{feature.importance.toFixed(3)}</span>
+            <CardContent className="space-y-3">
+              {!topFeatures.length && <p className="text-sm text-muted-foreground">No features available yet.</p>}
+              {topFeatures.map((feature, idx) => (
+                <div key={feature.feature} className="space-y-1">
+                  <div className="flex items-center justify-between">
+                    <span className="text-sm font-medium text-foreground">{idx + 1}. {feature.feature}</span>
+                    <span className="text-xs bg-primary/10 text-primary px-2 py-1 rounded">{Number(feature.importance ?? 0).toFixed(3)}</span>
+                  </div>
+                  <div className="h-1.5 w-full rounded-full bg-muted overflow-hidden">
+                    <div
+                      className="h-full rounded-full bg-primary transition-all"
+                      style={{ width: `${Math.min(100, Number(feature.importance ?? 0) * 100)}%` }}
+                    />
+                  </div>
                 </div>
               ))}
             </CardContent>

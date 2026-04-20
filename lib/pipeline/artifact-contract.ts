@@ -7,6 +7,11 @@ import type {
 
 export type GovernedArtifactStage = "metadata" | "cleaning" | "insights"
 
+const columnStatsSchema = z.object({
+  min: z.number(), max: z.number(), mean: z.number(), std: z.number(),
+  q25: z.number(), q50: z.number(), q75: z.number(), skewness: z.number(), outlierRatio: z.number(),
+}).optional()
+
 const metadataArtifactV1Schema: z.ZodType<MetadataArtifact> = z
   .object({
     artifactVersion: z.literal("v1"),
@@ -43,6 +48,7 @@ const metadataArtifactV1Schema: z.ZodType<MetadataArtifact> = z
           nullRatio: z.number().min(0).max(1),
           distinctCount: z.number().int().nonnegative(),
           sampleValues: z.array(z.union([z.string(), z.number(), z.boolean(), z.null()])),
+          stats: columnStatsSchema,
         }),
       ),
     }),
@@ -102,22 +108,10 @@ const insightsArtifactV1Schema: z.ZodType<InsightArtifact> = z
   .strict()
 
 const parseByStage = (stage: GovernedArtifactStage, version: string, data: unknown) => {
-  if (version !== "v1") {
-    throw new Error(`Unsupported artifact version ${version} for stage ${stage}`)
-  }
-
-  if (stage === "metadata") {
-    return metadataArtifactV1Schema.parse(data)
-  }
-
-  if (stage === "insights") {
-    return insightsArtifactV1Schema.parse(data)
-  }
-
-  if (stage === "cleaning") {
-    return cleaningArtifactV1Schema.parse(data)
-  }
-
+  if (version !== "v1") throw new Error(`Unsupported artifact version ${version} for stage ${stage}`)
+  if (stage === "metadata") return metadataArtifactV1Schema.parse(data)
+  if (stage === "insights") return insightsArtifactV1Schema.parse(data)
+  if (stage === "cleaning") return cleaningArtifactV1Schema.parse(data)
   throw new Error(`Unsupported governed artifact stage: ${stage}`)
 }
 

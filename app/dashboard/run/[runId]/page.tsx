@@ -31,20 +31,69 @@ type FeatureRec = {
 type ModelInsight = {
   selected: string; selectedFriendlyName: string; confidence: number; why: string
   alternatives: Array<{ name: string; friendlyName: string; confidence: number; why: string }>
+  llmAdvisor?: { recommended: string; confidence: number; reason: string; agreesWithRules: boolean } | null
+  comparisonModels?: string[]
+  comparisonResults?: Array<{ model: string; friendlyName: string; summary: string; metrics: Record<string, number> }>
+}
+
+type DataProfileReport = {
+  rowsInSample: number
+  columnCount: number
+  taskType: string
+  confidence: string
+  columns: Array<{
+    name: string
+    inferredType: string
+    nullRatio: number
+    missingLevel: string
+    distinctCount: number
+    sampleValues: Array<string | number | boolean | null>
+    role: string
+    stats?: Record<string, number> | null
+  }>
+  cleaning: {
+    decisions: Array<{ column: string; action: string; reason: string }>
+    transformations: Array<{ column: string; action: string; beforeNullRatio: number; afterNullRatio: number }>
+    statsBefore: { rowCountInSample: number; columnCount: number; highNullColumnCount: number }
+    statsAfter: { rowCountInSample: number; columnCount: number; highNullColumnCount: number }
+  } | null
 }
 
 type TokenUsage = {
   totalTokensIn: number; totalTokensOut: number; totalCost: number
   stageBreakdown: Array<{ stage: string; tokensIn: number; tokensOut: number; cost: number }>
   estimatedSingleLlmTokens: number; estimatedSingleLlmCost: number
+  baseline?: { totalTokensIn: number; totalTokensOut: number; totalCost: number }
+  savings?: { tokensSaved: number; costSaved: number; savingsPct: number }
+}
+
+type Budget = {
+  limits: { maxCost: number; maxTimeMs: number; maxLlmCalls: number }
+  used: { cost: number; llmCalls: number }
+  remaining: { cost: number; llmCalls: number }
+  stopped: { reason: string; atStage: string } | null
 }
 
 type DataQuality = {
-  silhouetteScore: number; groupingConfidence: string; topSignals: string[]
+  taskType?: string
+  // Clustering
+  silhouetteScore?: number
+  // Classification
+  accuracy?: number
+  f1Score?: number
+  classNames?: string[]
+  // Regression
+  rmse?: number
+  mae?: number
+  r2?: number
+  // Common
+  groupingConfidence: string
+  topSignals: string[]
 }
 
 type Summary = {
   status: string
+  taskType?: string
   datasetName?: string
   businessProfile: { description: string; industry: string; keyMetrics: string[] } | null
   overview: { headline: string; risks: string[]; opportunities: string[]; totalCustomers: number; groupCount: number; completedAt: string | null }
@@ -54,6 +103,8 @@ type Summary = {
   modelInsight: ModelInsight | null
   tokenUsage: TokenUsage | null
   dataQuality: DataQuality | null
+  budget?: Budget | null
+  dataProfileReport?: DataProfileReport | null
 }
 
 // ─── Constants ────────────────────────────────────────────────────────────────
@@ -282,7 +333,7 @@ export default function RunResultsPage({ params }: { params: Promise<{ runId: st
     )
   }
 
-  const { overview, businessProfile, groups, actions, featureRecommendations, modelInsight, tokenUsage, dataQuality } = summary
+  const { overview, businessProfile, groups, actions, featureRecommendations, modelInsight, tokenUsage, dataQuality, budget, dataProfileReport } = summary
   const sortedGroups = [...groups].sort((a, b) => {
     const o = { high: 0, medium: 1, low: 2 }
     return o[a.priority] - o[b.priority]
@@ -338,15 +389,16 @@ export default function RunResultsPage({ params }: { params: Promise<{ runId: st
 
         {/* Metric row */}
         <div className="flex flex-wrap gap-3">
-          <MetricCard icon={Users} label="Customers analyzed" value={overview.totalCustomers.toLocaleString()} />
-          <MetricCard icon={Zap} label="Groups identified" value={overview.groupCount} />
-          {dataQuality && (
-            <MetricCard
-              icon={ShieldCheck}
-              label="Grouping quality"
-              value={dataQuality.groupingConfidence}
-              sub={`Separation score ${dataQuality.silhouetteScore.toFixed(2)}`}
-            />
+          <MetricCard icon={Users} label="Records analyzed" value={overview.totalCustomers.toLocaleString()} />
+          <MetricCard icon={Zap} label={summary.taskType === "clustering" ? "Groups identified" : summary.taskType === "classification" ? "Classes predicted" : "Value tiers"} value={overview.groupCount} />
+          {dataQuality && summary.taskType === "classification" && (
+            <MetricCard icon={ShieldCheck} label="Model accuracy" value={`${dataQuality.accuracy ?? 0}%`} sub={`F1 score ${(dataQuality.f1Score ?? 0).toFixed(2)}`} />
+          )}
+          {dataQuality && summary.taskType === "regression" && (
+            <MetricCard icon={ShieldCheck} label="Fit quality" value={dataQuality.groupingConfidence} sub={`R² ${(dataQuality.r2 ?? 0).toFixed(2)}`} />
+          )}
+          {dataQuality && (!summary.taskType || summary.taskType === "clustering") && (
+            <MetricCard icon={ShieldCheck} label="Grouping quality" value={dataQuality.groupingConfidence} sub={`Separation ${(dataQuality.silhouetteScore ?? 0).toFixed(2)}`} />
           )}
           {tokenUsage && (
             <MetricCard icon={Coins} label="Analysis cost" value={`$${tokenUsage.totalCost.toFixed(4)}`} sub="via AI pipeline" />
@@ -356,7 +408,9 @@ export default function RunResultsPage({ params }: { params: Promise<{ runId: st
         {/* Tabs */}
         <Tabs defaultValue="groups">
           <TabsList className="flex flex-wrap h-auto gap-1 bg-muted/50 p-1">
-            <TabsTrigger value="groups" className="text-xs sm:text-sm">Customer Groups</TabsTrigger>
+            <TabsTrigger value="groups" className="text-xs sm:text-sm">
+              {summary.taskType === "classification" ? "Predicted Classes" : summary.taskType === "regression" ? "Value Tiers" : "Customer Groups"}
+            </TabsTrigger>
             <TabsTrigger value="overview" className="text-xs sm:text-sm">Insights</TabsTrigger>
             <TabsTrigger value="actions" className="text-xs sm:text-sm">Actions</TabsTrigger>
             <TabsTrigger value="data" className="text-xs sm:text-sm">Improve Data</TabsTrigger>
@@ -366,7 +420,11 @@ export default function RunResultsPage({ params }: { params: Promise<{ runId: st
           {/* GROUPS TAB */}
           <TabsContent value="groups" className="mt-5 space-y-4">
             <p className="text-sm text-muted-foreground">
-              Your customers were automatically grouped by their behaviour patterns. Groups are sorted by action priority.
+              {summary.taskType === "classification"
+                ? "Each group represents a predicted class. Groups are sorted by priority."
+                : summary.taskType === "regression"
+                  ? "Records are split into high, mid, and low predicted value tiers. Groups are sorted by value."
+                  : "Your records were automatically grouped by behaviour patterns. Groups are sorted by action priority."}
             </p>
             <div className="grid gap-4 sm:grid-cols-2">
               {sortedGroups.map((g) => <GroupCard key={g.id} group={g} />)}
@@ -437,6 +495,57 @@ export default function RunResultsPage({ params }: { params: Promise<{ runId: st
                 </div>
               </div>
             </div>
+            {dataProfileReport && (
+              <div className="space-y-3">
+                <div className="grid gap-3 sm:grid-cols-4">
+                  <div className="rounded-xl border border-border bg-card/50 p-3">
+                    <p className="text-xs text-muted-foreground">Rows profiled</p>
+                    <p className="text-lg font-semibold text-foreground">{dataProfileReport.rowsInSample.toLocaleString()}</p>
+                  </div>
+                  <div className="rounded-xl border border-border bg-card/50 p-3">
+                    <p className="text-xs text-muted-foreground">Columns profiled</p>
+                    <p className="text-lg font-semibold text-foreground">{dataProfileReport.columnCount}</p>
+                  </div>
+                  <div className="rounded-xl border border-border bg-card/50 p-3">
+                    <p className="text-xs text-muted-foreground">Detected task</p>
+                    <p className="text-lg font-semibold capitalize text-foreground">{dataProfileReport.taskType}</p>
+                  </div>
+                  <div className="rounded-xl border border-border bg-card/50 p-3">
+                    <p className="text-xs text-muted-foreground">Profile confidence</p>
+                    <p className="text-lg font-semibold capitalize text-foreground">{dataProfileReport.confidence}</p>
+                  </div>
+                </div>
+
+                <Accordion title="Data profile summary" icon={BarChart3}>
+                  <div className="space-y-2">
+                    {dataProfileReport.columns.slice(0, 8).map((col) => (
+                      <div key={col.name} className="rounded-lg border border-border bg-card p-3">
+                        <div className="flex flex-wrap items-center gap-2">
+                          <span className="text-sm font-medium text-foreground">{col.name}</span>
+                          <Badge variant="outline" className="text-[11px] capitalize">{col.inferredType}</Badge>
+                          <Badge variant="outline" className="text-[11px] capitalize">{col.role}</Badge>
+                          <Badge variant="outline" className="text-[11px]">Missing: {Math.round(col.nullRatio * 100)}% ({col.missingLevel})</Badge>
+                        </div>
+                        <p className="mt-1 text-xs text-muted-foreground">Distinct values: {col.distinctCount}</p>
+                      </div>
+                    ))}
+                  </div>
+                </Accordion>
+
+                {dataProfileReport.cleaning && (
+                  <Accordion title="Cleaning actions applied" icon={ShieldCheck}>
+                    <div className="space-y-2">
+                      {dataProfileReport.cleaning.decisions.slice(0, 8).map((decision) => (
+                        <div key={`${decision.column}-${decision.action}`} className="rounded-lg border border-border bg-card p-3">
+                          <p className="text-sm font-medium text-foreground">{decision.column} {"->"} {decision.action}</p>
+                          <p className="text-xs text-muted-foreground">{decision.reason}</p>
+                        </div>
+                      ))}
+                    </div>
+                  </Accordion>
+                )}
+              </div>
+            )}
             {featureRecommendations.length === 0 && (
               <p className="text-sm text-muted-foreground text-center py-8">
                 Run a fresh analysis to get personalised data recommendations.
@@ -459,7 +568,7 @@ export default function RunResultsPage({ params }: { params: Promise<{ runId: st
             <p className="text-xs text-muted-foreground">Technical details about how the analysis was performed.</p>
 
             {modelInsight && (
-              <Accordion title="How your customers were grouped" icon={Brain}>
+              <Accordion title={summary.taskType === "classification" ? "How predictions were made" : summary.taskType === "regression" ? "How values were predicted" : "How your customers were grouped"} icon={Brain}>
                 <div className="space-y-3">
                   <div className="rounded-lg bg-muted/50 p-3 space-y-1">
                     <p className="text-sm font-medium text-foreground">Method used: {modelInsight.selectedFriendlyName}</p>
@@ -482,59 +591,158 @@ export default function RunResultsPage({ params }: { params: Promise<{ runId: st
                       ))}
                     </div>
                   )}
+                  {modelInsight.llmAdvisor && (
+                    <div className="rounded-lg border border-border bg-card p-3 space-y-1">
+                      <p className="text-xs font-medium text-muted-foreground uppercase tracking-wide">LLM cross-check</p>
+                      <p className="text-sm text-foreground">
+                        Suggested: <strong>{modelInsight.llmAdvisor.recommended}</strong> ({Math.round(modelInsight.llmAdvisor.confidence * 100)}% confidence)
+                      </p>
+                      <p className="text-sm text-muted-foreground">{modelInsight.llmAdvisor.reason}</p>
+                      <p className={`text-xs ${modelInsight.llmAdvisor.agreesWithRules ? "text-emerald-600" : "text-amber-600"}`}>
+                        {modelInsight.llmAdvisor.agreesWithRules ? "Matches deterministic selection" : "Differs from deterministic selection"}
+                      </p>
+                    </div>
+                  )}
+                  {modelInsight.comparisonResults && modelInsight.comparisonResults.length > 0 && (
+                    <div className="space-y-2">
+                      <p className="text-xs font-medium text-muted-foreground uppercase tracking-wide">Model comparison</p>
+                      {modelInsight.comparisonResults.map((item) => (
+                        <div key={item.model} className="rounded-lg border border-border bg-card p-3 space-y-1">
+                          <p className="text-sm font-medium text-foreground">{item.friendlyName}</p>
+                          <p className="text-xs text-muted-foreground">{item.summary}</p>
+                          <p className="text-xs text-muted-foreground">
+                            {Object.entries(item.metrics)
+                              .map(([k, v]) => `${k}: ${typeof v === "number" ? v.toFixed(4) : String(v)}`)
+                              .join(" | ")}
+                          </p>
+                        </div>
+                      ))}
+                    </div>
+                  )}
                 </div>
               </Accordion>
             )}
 
             {dataQuality && (
-              <Accordion title="Key signals that differentiate your customers" icon={BarChart3}>
-                <div className="space-y-2">
-                  {dataQuality.topSignals.map((signal, i) => (
-                    <div key={signal} className="flex items-center gap-3">
-                      <span className="text-xs text-muted-foreground w-4">{i + 1}</span>
-                      <div className="flex-1 h-1.5 rounded-full bg-muted overflow-hidden">
-                        <div className="h-full bg-primary/70 rounded-full" style={{ width: `${Math.max(20, 95 - i * 15)}%` }} />
+              <Accordion title="Key signals and model metrics" icon={BarChart3}>
+                <div className="space-y-4">
+                  {/* Task-specific metrics */}
+                  {summary.taskType === "classification" && (
+                    <div className="grid grid-cols-2 gap-3">
+                      <div className="rounded-lg bg-muted/50 p-3 text-center">
+                        <p className="text-xs text-muted-foreground">Accuracy</p>
+                        <p className="text-lg font-bold text-foreground">{dataQuality.accuracy ?? 0}%</p>
                       </div>
-                      <span className="text-sm text-foreground capitalize">{signal}</span>
+                      <div className="rounded-lg bg-muted/50 p-3 text-center">
+                        <p className="text-xs text-muted-foreground">F1 Score</p>
+                        <p className="text-lg font-bold text-foreground">{(dataQuality.f1Score ?? 0).toFixed(3)}</p>
+                      </div>
                     </div>
-                  ))}
+                  )}
+                  {summary.taskType === "regression" && (
+                    <div className="grid grid-cols-3 gap-3">
+                      <div className="rounded-lg bg-muted/50 p-3 text-center">
+                        <p className="text-xs text-muted-foreground">R²</p>
+                        <p className="text-lg font-bold text-foreground">{(dataQuality.r2 ?? 0).toFixed(2)}</p>
+                      </div>
+                      <div className="rounded-lg bg-muted/50 p-3 text-center">
+                        <p className="text-xs text-muted-foreground">RMSE</p>
+                        <p className="text-lg font-bold text-foreground">{(dataQuality.rmse ?? 0).toFixed(4)}</p>
+                      </div>
+                      <div className="rounded-lg bg-muted/50 p-3 text-center">
+                        <p className="text-xs text-muted-foreground">MAE</p>
+                        <p className="text-lg font-bold text-foreground">{(dataQuality.mae ?? 0).toFixed(4)}</p>
+                      </div>
+                    </div>
+                  )}
+                  {(!summary.taskType || summary.taskType === "clustering") && dataQuality.silhouetteScore !== undefined && (
+                    <div className="rounded-lg bg-muted/50 p-3 flex items-center justify-between">
+                      <span className="text-sm text-muted-foreground">Silhouette score</span>
+                      <span className="text-sm font-medium text-foreground">{dataQuality.silhouetteScore.toFixed(3)} — {dataQuality.groupingConfidence}</span>
+                    </div>
+                  )}
+                  {/* Top features */}
+                  <div className="space-y-2">
+                    <p className="text-xs font-medium text-muted-foreground uppercase tracking-wide">Top predictive features</p>
+                    {dataQuality.topSignals.map((signal, i) => (
+                      <div key={signal} className="flex items-center gap-3">
+                        <span className="text-xs text-muted-foreground w-4">{i + 1}</span>
+                        <div className="flex-1 h-1.5 rounded-full bg-muted overflow-hidden">
+                          <div className="h-full bg-primary/70 rounded-full" style={{ width: `${Math.max(20, 95 - i * 15)}%` }} />
+                        </div>
+                        <span className="text-sm text-foreground capitalize">{signal}</span>
+                      </div>
+                    ))}
+                  </div>
                 </div>
               </Accordion>
             )}
 
             {tokenUsage && (
-              <Accordion title="AI usage and cost breakdown" icon={Coins}>
+              <Accordion title="AI usage, budget and savings" icon={Coins}>
                 <div className="space-y-4">
-                  <div className="grid grid-cols-2 gap-3 sm:grid-cols-3">
+                  <div className="grid grid-cols-2 gap-3 sm:grid-cols-4">
                     <div className="rounded-lg bg-muted/50 p-3 text-center">
                       <p className="text-xs text-muted-foreground">Tokens used</p>
                       <p className="text-lg font-bold text-foreground">{(tokenUsage.totalTokensIn + tokenUsage.totalTokensOut).toLocaleString()}</p>
                     </div>
                     <div className="rounded-lg bg-muted/50 p-3 text-center">
-                      <p className="text-xs text-muted-foreground">Total cost</p>
+                      <p className="text-xs text-muted-foreground">Cost</p>
                       <p className="text-lg font-bold text-foreground">${tokenUsage.totalCost.toFixed(4)}</p>
                     </div>
-                    <div className="rounded-lg bg-emerald-500/10 border border-emerald-500/20 p-3 text-center col-span-2 sm:col-span-1">
-                      <p className="text-xs text-emerald-600">vs single-LLM</p>
-                      <p className="text-lg font-bold text-emerald-600">
-                        {tokenUsage.estimatedSingleLlmCost > tokenUsage.totalCost
-                          ? `${Math.round(tokenUsage.estimatedSingleLlmCost / Math.max(0.0001, tokenUsage.totalCost))}× cheaper`
-                          : "More efficient"}
-                      </p>
+                    <div className="rounded-lg bg-muted/50 p-3 text-center">
+                      <p className="text-xs text-muted-foreground">Baseline cost</p>
+                      <p className="text-lg font-bold text-foreground">${(tokenUsage.baseline?.totalCost ?? tokenUsage.estimatedSingleLlmCost).toFixed(4)}</p>
+                    </div>
+                    <div className="rounded-lg bg-emerald-500/10 border border-emerald-500/20 p-3 text-center">
+                      <p className="text-xs text-emerald-600">Saved</p>
+                      <p className="text-lg font-bold text-emerald-600">{tokenUsage.savings?.savingsPct ?? 0}%</p>
                     </div>
                   </div>
+
+                  {budget && (
+                    <div className="rounded-lg border border-border p-3 space-y-2">
+                      <div className="flex items-center justify-between">
+                        <p className="text-xs font-medium text-muted-foreground uppercase tracking-wide">Budget</p>
+                        {budget.stopped && (
+                          <span className="text-xs font-medium text-red-600">Stopped early: {budget.stopped.reason} at {budget.stopped.atStage}</span>
+                        )}
+                      </div>
+                      <div className="grid grid-cols-2 gap-3 text-xs">
+                        <div>
+                          <div className="flex items-center justify-between text-muted-foreground">
+                            <span>Cost</span>
+                            <span>${budget.used.cost.toFixed(4)} / ${budget.limits.maxCost.toFixed(2)}</span>
+                          </div>
+                          <div className="mt-1 h-1.5 rounded-full bg-muted overflow-hidden">
+                            <div className="h-full bg-primary rounded-full" style={{ width: `${Math.min(100, (budget.used.cost / Math.max(0.0001, budget.limits.maxCost)) * 100)}%` }} />
+                          </div>
+                        </div>
+                        <div>
+                          <div className="flex items-center justify-between text-muted-foreground">
+                            <span>LLM calls</span>
+                            <span>{budget.used.llmCalls} / {budget.limits.maxLlmCalls}</span>
+                          </div>
+                          <div className="mt-1 h-1.5 rounded-full bg-muted overflow-hidden">
+                            <div className="h-full bg-primary rounded-full" style={{ width: `${Math.min(100, (budget.used.llmCalls / Math.max(1, budget.limits.maxLlmCalls)) * 100)}%` }} />
+                          </div>
+                        </div>
+                      </div>
+                    </div>
+                  )}
+
                   <div className="space-y-1.5">
                     <p className="text-xs font-medium text-muted-foreground uppercase tracking-wide">Stage breakdown</p>
-                    {tokenUsage.stageBreakdown.map((s) => (
-                      <div key={s.stage} className="flex items-center justify-between text-xs text-muted-foreground">
+                    {tokenUsage.stageBreakdown.map((s, i) => (
+                      <div key={`${s.stage}-${i}`} className="flex items-center justify-between text-xs text-muted-foreground">
                         <span className="capitalize">{s.stage.replace("_", " ")}</span>
                         <span>{(s.tokensIn + s.tokensOut).toLocaleString()} tokens · ${s.cost.toFixed(4)}</span>
                       </div>
                     ))}
                   </div>
                   <p className="text-xs text-muted-foreground">
-                    A single-LLM approach for {tokenUsage.estimatedSingleLlmTokens.toLocaleString()} tokens would cost ~${tokenUsage.estimatedSingleLlmCost.toFixed(4)}.
-                    Our staged pipeline is more efficient and more accurate.
+                    A naive pipeline that re-sends the full dataset and prior context on every LLM call would use ~{(tokenUsage.baseline?.totalTokensIn ?? 0 + (tokenUsage.baseline?.totalTokensOut ?? 0)).toLocaleString()} tokens and cost ~${(tokenUsage.baseline?.totalCost ?? tokenUsage.estimatedSingleLlmCost).toFixed(4)}.
+                    Context isolation saved {(tokenUsage.savings?.tokensSaved ?? 0).toLocaleString()} tokens (${(tokenUsage.savings?.costSaved ?? 0).toFixed(4)}).
                   </p>
                 </div>
               </Accordion>

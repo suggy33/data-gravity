@@ -34,7 +34,6 @@ const awsRegions = [
 
 export function AwsConnectionModal() {
   const [open, setOpen] = useState(false)
-  const [isConnecting, setIsConnecting] = useState(false)
 
   useEffect(() => {
     const handleTrigger = (e: MouseEvent) => {
@@ -48,11 +47,10 @@ export function AwsConnectionModal() {
   }, [])
 
   const handleConnect = () => {
-    setIsConnecting(true)
-    setTimeout(() => {
-      setIsConnecting(false)
-      setOpen(false)
-    }, 2000)
+    window.alert(
+      "AWS integration is not yet wired up. Use the Data Sources page to upload a CSV directly.",
+    )
+    setOpen(false)
   }
 
   return (
@@ -131,9 +129,8 @@ export function AwsConnectionModal() {
             <Button
               type="submit"
               className="bg-primary text-primary-foreground hover:bg-primary/90"
-              disabled={isConnecting}
             >
-              {isConnecting ? "Connecting..." : "Connect"}
+              Connect
             </Button>
           </div>
         </form>

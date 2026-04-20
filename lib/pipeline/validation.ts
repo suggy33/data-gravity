@@ -20,31 +20,61 @@ type MetadataCandidate = {
 
 const copyRoles = (roles: ColumnRoleAssignment[]) => roles.map((role) => ({ ...role }))
 
-const looksLikeTargetColumn = (columnName: string) => {
-  const normalized = columnName.toLowerCase()
-  return ["target", "label", "class", "outcome", "churn", "converted", "response", "outbound"].some((token) =>
-    normalized.includes(token),
+const TARGET_EXACT = new Set([
+  "target", "label", "class", "y", "outcome", "churn", "converted",
+  "response", "fraud", "default", "survived", "purchased", "clicked",
+  "subscribed", "cancelled", "revenue", "price", "sales", "profit",
+])
+
+const looksLikeTargetColumn = (name: string): boolean => {
+  const n = name.toLowerCase()
+  if (TARGET_EXACT.has(n)) return true
+  return (
+    n.endsWith("_target") || n.endsWith("_label") || n.endsWith("_class") ||
+    n.endsWith("_flag") || n.endsWith("_churn") || n.endsWith("_outcome") ||
+    n.startsWith("is_") || n.startsWith("has_") || n.startsWith("will_")
   )
 }
 
 export const deriveMetadataCandidate = (schemaSummary: ColumnProfileArtifact): MetadataCandidate => {
-  const numericColumns = schemaSummary.columns.filter((column) => column.inferredType === "numeric")
-  const categoricalColumns = schemaSummary.columns.filter((column) => column.inferredType === "categorical")
-  const hasExplicitTarget = schemaSummary.columns.some((column) => looksLikeTargetColumn(column.name))
+  const numericColumns = schemaSummary.columns.filter((c) => c.inferredType === "numeric")
+  const targetColumn = schemaSummary.columns.find((c) => looksLikeTargetColumn(c.name))
 
   const columnRoles: ColumnRoleAssignment[] = schemaSummary.columns.map((column) => {
     const uniqueRatio = column.distinctCount / Math.max(1, schemaSummary.rowCountInSample)
+
     if (uniqueRatio > HIGH_UNIQUE_RATIO) {
       return { column: column.name, role: "id", inferredType: column.inferredType, source: "rule" }
     }
-
-    return {
-      column: column.name,
-      role: "feature",
-      inferredType: column.inferredType,
-      source: "rule",
+    if (targetColumn && column.name === targetColumn.name) {
+      return { column: column.name, role: "target", inferredType: column.inferredType, source: "rule" }
     }
+    return { column: column.name, role: "feature", inferredType: column.inferredType, source: "rule" }
   })
+
+  if (targetColumn) {
+    const uniqueRatio = targetColumn.distinctCount / Math.max(1, schemaSummary.rowCountInSample)
+
+    if (
+      targetColumn.inferredType === "categorical" ||
+      targetColumn.inferredType === "boolean" ||
+      (targetColumn.inferredType === "numeric" && targetColumn.distinctCount <= 20 && uniqueRatio < 0.3)
+    ) {
+      return {
+        taskType: "classification",
+        confidence: targetColumn.distinctCount <= 2 ? "high" : "medium",
+        columnRoles,
+      }
+    }
+
+    if (targetColumn.inferredType === "numeric" && uniqueRatio > 0.05) {
+      return {
+        taskType: "regression",
+        confidence: numericColumns.length >= 2 ? "high" : "medium",
+        columnRoles,
+      }
+    }
+  }
 
   return {
     taskType: "clustering",
@@ -112,7 +142,6 @@ export const validateMetadataArtifact = (
       if (column.name === target.column) return false
       return column.name.toLowerCase().includes(normalizedTarget)
     })
-
     if (leakingColumn) {
       issues.push({
         code: "target_leakage",
@@ -136,9 +165,7 @@ export const validateMetadataArtifact = (
   }
 }
 
-export const createValidatedMetadataArtifact = (
-  schemaSummary: ColumnProfileArtifact,
-): MetadataArtifact => {
+export const createValidatedMetadataArtifact = (schemaSummary: ColumnProfileArtifact): MetadataArtifact => {
   const candidate = deriveMetadataCandidate(schemaSummary)
   const draft: MetadataArtifact = {
     artifactVersion: "v1",
@@ -146,19 +173,9 @@ export const createValidatedMetadataArtifact = (
     taskType: candidate.taskType,
     confidence: candidate.confidence,
     columnRoles: copyRoles(candidate.columnRoles),
-    validation: {
-      isValid: true,
-      confidence: candidate.confidence,
-      issues: [],
-      reviewRequired: false,
-    },
+    validation: { isValid: true, confidence: candidate.confidence, issues: [], reviewRequired: false },
     schemaSummary,
   }
-
   const validation = validateMetadataArtifact(draft, schemaSummary)
-  return {
-    ...draft,
-    confidence: validation.confidence,
-    validation,
-  }
+  return { ...draft, confidence: validation.confidence, validation }
 }

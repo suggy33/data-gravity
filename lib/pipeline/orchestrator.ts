@@ -1,5 +1,6 @@
 import { createHash } from "crypto"
 import { validateArtifact } from "@/lib/pipeline/artifact-contract"
+import { BudgetTracker } from "@/lib/pipeline/budget"
 import { getPipelineRepository, type PipelineRepository } from "@/lib/pipeline/repository"
 import {
   buildCleaningPlan,
@@ -10,9 +11,7 @@ import {
   buildModelSelection,
   buildStrategy,
   buildTraining,
-  estimateLlmUsage,
   executeCleaning,
-  toMultiplier,
 } from "@/lib/pipeline/stages"
 import { validateMetadataArtifact } from "@/lib/pipeline/validation"
 import type {
@@ -103,6 +102,7 @@ const stageInput = (
       return {
         datasetName: startInput.datasetName,
         sampleRows: startInput.sampleRows.map((row) => cloneRow(row as Record<string, JsonValue>)),
+        budget: (startInput.budget ?? {}) as JsonValue,
       }
     case "metadata":
       return {
@@ -118,16 +118,20 @@ const stageInput = (
         metadata: stageOutputs.metadata ?? null,
         cleaning: stageOutputs.cleaning ?? null,
         maxClusters: startInput.maxClusters ?? 7,
+        modelPreference: startInput.modelPreference ?? null,
       }
     case "training":
       return {
         cleaning: stageOutputs.cleaning ?? null,
         modelSelection: stageOutputs.model_selection ?? null,
+        metadata: stageOutputs.metadata ?? null,
       }
     case "evaluation":
       return {
         training: stageOutputs.training ?? null,
         cleaning: stageOutputs.cleaning ?? null,
+        modelSelection: stageOutputs.model_selection ?? null,
+        metadata: stageOutputs.metadata ?? null,
       }
     case "insights":
       return {
@@ -149,6 +153,7 @@ const executeStage = async (
   stage: PipelineStageName,
   startInput: PipelineStartInput,
   stageOutputs: Partial<Record<PipelineStageName, JsonValue>>,
+  tracker: BudgetTracker,
 ): Promise<JsonValue> => {
   switch (stage) {
     case "ingestion":
@@ -166,30 +171,33 @@ const executeStage = async (
     case "model_selection": {
       const metadata = frozenCopy(stageOutputs.metadata) as MetadataArtifact
       const cleaning = frozenCopy(stageOutputs.cleaning) as CleaningArtifact
-      return buildModelSelection(metadata, cleaning, startInput.maxClusters ?? 7)
+      return await buildModelSelection(metadata, cleaning, startInput.maxClusters ?? 7, tracker, startInput.modelPreference)
     }
     case "training": {
       const cleaning = frozenCopy(stageOutputs.cleaning) as CleaningArtifact
       const modelSelection = frozenCopy(stageOutputs.model_selection) as ModelPlanArtifact
-      return buildTraining(cleaning, modelSelection)
+      const metadata = frozenCopy(stageOutputs.metadata) as MetadataArtifact
+      return buildTraining(cleaning, modelSelection, metadata)
     }
     case "evaluation": {
       const training = frozenCopy(stageOutputs.training) as TrainingArtifact
       const cleaning = frozenCopy(stageOutputs.cleaning) as CleaningArtifact
-      return buildEvaluation(training, cleaning)
+      const modelSelection = frozenCopy(stageOutputs.model_selection) as ModelPlanArtifact
+      const metadata = frozenCopy(stageOutputs.metadata) as MetadataArtifact
+      return buildEvaluation(training, cleaning, modelSelection, metadata)
     }
     case "insights": {
       const training = frozenCopy(stageOutputs.training) as TrainingArtifact
       const evaluation = frozenCopy(stageOutputs.evaluation) as EvaluationArtifact
       const metadata = frozenCopy(stageOutputs.metadata) as MetadataArtifact
       const modelSelection = frozenCopy(stageOutputs.model_selection) as ModelPlanArtifact
-      return buildInsights(training, evaluation, metadata, modelSelection.modelVersion)
+      return buildInsights(training, evaluation, metadata, modelSelection.modelVersion, tracker)
     }
     case "strategy": {
       const training = frozenCopy(stageOutputs.training) as TrainingArtifact
       const insights = frozenCopy(stageOutputs.insights) as InsightArtifact
       const metadata = frozenCopy(stageOutputs.metadata) as MetadataArtifact
-      return buildStrategy(training, insights, metadata, startInput.datasetName, insights.outputVersion)
+      return buildStrategy(training, insights, metadata, startInput.datasetName, insights.outputVersion, tracker)
     }
     default:
       return {}
@@ -390,18 +398,27 @@ const reconcileRun = (
   return { ok: true }
 }
 
-const recordUsageIfNeeded = async (
+const recordActualUsage = async (
   runId: string,
   stage: PipelineStageName,
-  sampleRows: PipelineStartInput["sampleRows"],
-  usedCache: boolean,
+  tracker: BudgetTracker,
   repository: PipelineRepository,
 ) => {
-  if (usedCache) return
-  const multiplier = toMultiplier(sampleRows, Object.keys(sampleRows[0] ?? {}).length)
-  const usage = estimateLlmUsage(runId, stage, multiplier)
-  if (usage) {
-    await repository.recordLlmCall(usage)
+  const calls = tracker.callsForStage(stage)
+  for (const call of calls) {
+    await repository.recordLlmCall({
+      runId, stage,
+      tokensIn: call.tokensIn,
+      tokensOut: call.tokensOut,
+      cost: call.cost,
+    })
+  }
+}
+
+class BudgetExceededError extends Error {
+  constructor(public reason: "cost" | "time" | "calls", public atStage: PipelineStageName) {
+    super(`Budget exceeded (${reason}) at stage ${atStage}`)
+    this.name = "BudgetExceededError"
   }
 }
 
@@ -439,6 +456,7 @@ export const executePipelineRun = async (
   const currentStages = await repository.listRunStages(run.id)
   const stageOutputs = hydrateStageOutputs(currentStages)
   let parentSnapshotId = (await repository.getLatestRunSnapshot(run.id))?.id ?? null
+  const tracker = new BudgetTracker(input.budget)
 
   try {
     for (const stage of STAGE_ORDER) {
@@ -446,6 +464,13 @@ export const executePipelineRun = async (
       const status: StageStatus = current?.status ?? "pending"
       if (status === "completed") {
         continue
+      }
+
+      // Between-stage budget gate (only matters for stages that might trigger LLM calls later,
+      // but we enforce uniformly so time budget aborts promptly).
+      const gate = tracker.check(stage)
+      if (!gate.allowed) {
+        throw new BudgetExceededError(gate.reason, stage)
       }
 
       if (stage === "training") {
@@ -458,7 +483,7 @@ export const executePipelineRun = async (
       const execution = await maybeExecuteWithCache(
         stage,
         inputJson,
-        async () => enforceArtifactContract(stage, await executeStage(stage, input, stageOutputs)),
+        async () => enforceArtifactContract(stage, await executeStage(stage, input, stageOutputs, tracker)),
         repository,
       )
 
@@ -476,7 +501,9 @@ export const executePipelineRun = async (
         }
       }
 
-      await recordUsageIfNeeded(run.id, stage, input.sampleRows, execution.usedCache, repository)
+      if (!execution.usedCache) {
+        await recordActualUsage(run.id, stage, tracker, repository)
+      }
     }
 
     await applyReconciliationStatus(run.id, stageOutputs, repository)
@@ -562,8 +589,14 @@ export const resumePipelineRun = async (
     sampleRows,
   }
 
+  const tracker = new BudgetTracker(input.budget)
   try {
     for (const stage of RESUME_STAGE_ORDER) {
+      const gate = tracker.check(stage)
+      if (!gate.allowed) {
+        throw new BudgetExceededError(gate.reason, stage)
+      }
+
       if (stage === "training") {
         assertPreTrainingSafety(stageOutputs)
       }
@@ -574,7 +607,7 @@ export const resumePipelineRun = async (
       const execution = await maybeExecuteWithCache(
         stage,
         inputJson,
-        async () => enforceArtifactContract(stage, await executeStage(stage, input, stageOutputs)),
+        async () => enforceArtifactContract(stage, await executeStage(stage, input, stageOutputs, tracker)),
         repository,
       )
 
@@ -582,7 +615,9 @@ export const resumePipelineRun = async (
       stageOutputs[stage] = execution.outputJson
       parentSnapshotId = await captureSnapshot(runId, "stage_completed", stageOutputs, parentSnapshotId, repository)
 
-      await recordUsageIfNeeded(runId, stage, input.sampleRows, execution.usedCache, repository)
+      if (!execution.usedCache) {
+        await recordActualUsage(runId, stage, tracker, repository)
+      }
     }
 
     await applyReconciliationStatus(runId, stageOutputs, repository)

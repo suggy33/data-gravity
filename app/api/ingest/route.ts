@@ -6,6 +6,8 @@ const readField = (formData: FormData, key: string) => {
   return typeof value === "string" ? value.trim() : ""
 }
 
+const DEFAULT_SAMPLE_ROW_LIMIT = 10000  // Increased to handle larger datasets (production-ready)
+
 export async function POST(request: Request) {
   try {
     const formData = await request.formData()
@@ -35,7 +37,7 @@ export async function POST(request: Request) {
       fileName: fileEntry.name,
       contentType: fileEntry.type || "text/csv",
       csvText,
-      sampleRowLimit: 100,
+      sampleRowLimit: DEFAULT_SAMPLE_ROW_LIMIT,
     })
 
     return NextResponse.json(

@@ -5,6 +5,32 @@ import { getDatasetVersionById } from "@/lib/ingest/service"
 
 const primitiveSchema = z.union([z.string(), z.number(), z.boolean(), z.null()])
 
+const modelNameSchema = z.enum([
+  "kmeans",
+  "gmm",
+  "hierarchical",
+  "hdbscan",
+  "dbscan",
+  "decision_tree",
+  "logistic_regression",
+  "random_forest",
+  "knn",
+  "svm",
+  "linear_regression",
+  "ridge",
+  "lasso",
+  "decision_tree_regressor",
+  "random_forest_regressor",
+])
+
+const budgetSchema = z
+  .object({
+    maxCost: z.number().positive().optional(),
+    maxTimeMs: z.number().int().positive().optional(),
+    maxLlmCalls: z.number().int().positive().optional(),
+  })
+  .optional()
+
 const startInputSchema = z.object({
   runId: z.string().uuid().optional(),
   datasetVersionId: z.string().uuid().optional(),
@@ -13,6 +39,13 @@ const startInputSchema = z.object({
   uploadedBy: z.string().optional(),
   maxClusters: z.number().int().min(2).max(20).optional(),
   sampleRows: z.array(z.record(z.string(), primitiveSchema)).min(1).optional(),
+  modelPreference: z
+    .object({
+      primaryModel: modelNameSchema.optional(),
+      compareModels: z.array(modelNameSchema).max(4).optional(),
+    })
+    .optional(),
+  budget: budgetSchema,
 })
 
 export async function POST(request: Request) {
@@ -45,6 +78,8 @@ export async function POST(request: Request) {
         datasetVersionId: input.datasetVersionId,
         maxClusters: input.maxClusters,
         sampleRows,
+        modelPreference: input.modelPreference,
+        budget: input.budget,
       },
       { runId: input.runId, datasetVersionId: input.datasetVersionId },
     )

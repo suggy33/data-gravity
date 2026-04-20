@@ -3,7 +3,13 @@
 import { Button } from "@/components/ui/button"
 import { Cloud, RefreshCw } from "lucide-react"
 
+export const DASHBOARD_REFRESH_EVENT = "dashboard:refresh"
+
 export function DashboardHeader() {
+  const handleRefresh = () => {
+    window.dispatchEvent(new CustomEvent(DASHBOARD_REFRESH_EVENT))
+  }
+
   return (
     <header className="flex h-16 items-center justify-between border-b border-border bg-background/50 px-6 backdrop-blur-sm">
       <div>
@@ -12,7 +18,12 @@ export function DashboardHeader() {
       </div>
 
       <div className="flex items-center gap-3">
-        <Button variant="outline" size="sm" className="gap-2 border-border">
+        <Button
+          variant="outline"
+          size="sm"
+          className="gap-2 border-border"
+          onClick={handleRefresh}
+        >
           <RefreshCw className="h-4 w-4" />
           Refresh Data
         </Button>

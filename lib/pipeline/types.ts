@@ -30,11 +30,32 @@ export type PipelineStartInput = {
   datasetVersionId?: string
   sampleRows: DataRow[]
   maxClusters?: number
+  modelPreference?: {
+    primaryModel?: ModelName
+    compareModels?: ModelName[]
+  }
+  budget?: Partial<{
+    maxCost: number
+    maxTimeMs: number
+    maxLlmCalls: number
+  }>
 }
 
 export type MetadataOverrideInput = {
   targetColumn?: string
   columnRoles?: Record<string, ColumnRole>
+}
+
+export type ColumnStats = {
+  min: number
+  max: number
+  mean: number
+  std: number
+  q25: number
+  q50: number
+  q75: number
+  skewness: number
+  outlierRatio: number
 }
 
 export type ColumnProfile = {
@@ -43,6 +64,7 @@ export type ColumnProfile = {
   nullRatio: number
   distinctCount: number
   sampleValues: PrimitiveCell[]
+  stats?: ColumnStats
 }
 
 export type ColumnProfileArtifact = {
@@ -94,7 +116,7 @@ export type MetadataArtifact = {
 
 export type CleaningDecision = {
   column: string
-  action: "impute_median" | "impute_mode" | "encode_onehot" | "scale_standard" | "clip_outliers"
+  action: "impute_median" | "impute_mode" | "encode_onehot" | "scale_standard" | "clip_outliers" | "drop_column"
   reasoning: string
 }
 
@@ -134,8 +156,13 @@ export type IngestionArtifact = {
   sampleWindow: DataRow[]
 }
 
+export type ModelName =
+  | "kmeans" | "dbscan" | "gmm" | "hierarchical" | "hdbscan"
+  | "decision_tree" | "logistic_regression" | "random_forest" | "knn" | "svm"
+  | "linear_regression" | "ridge" | "lasso" | "decision_tree_regressor" | "random_forest_regressor"
+
 export type ModelCandidate = {
-  name: "kmeans" | "dbscan" | "gmm" | "hierarchical" | "hdbscan"
+  name: ModelName
   confidence: number
   reason: string
   params: Record<string, JsonPrimitive>
@@ -146,6 +173,28 @@ export type ModelPlanArtifact = {
   modelVersion: string
   selected: ModelCandidate
   alternatives: ModelCandidate[]
+  comparisonModels?: ModelName[]
+  llmAdvisor?: {
+    recommended: ModelName
+    confidence: number
+    reason: string
+    agreesWithRules: boolean
+  }
+}
+
+export type ModelComparison = {
+  model: ModelName
+  summary: string
+  metrics: {
+    silhouetteScore?: number
+    clusterCount?: number
+    noiseRatio?: number
+    accuracy?: number
+    f1Score?: number
+    rmse?: number
+    mae?: number
+    r2?: number
+  }
 }
 
 export type SegmentSummary = {
@@ -154,25 +203,53 @@ export type SegmentSummary = {
   size: number
   averageScore: number
   risk: "low" | "medium" | "high"
+  monetaryValue?: number
+  engagementScore?: number
+  recency?: number
+  frequency?: number
+  centroid2d?: { x: number; y: number }
 }
 
 export type TrainingArtifact = {
+  taskType: TaskType
   modelName: string
-  k: number
   segments: SegmentSummary[]
+  featureImportances: Array<{ feature: string; importance: number }>
+  // Clustering
+  k?: number
+  centroids?: number[][]
+  silhouetteScore?: number
+  projection2d?: Array<{ x: number; y: number; label: number }>
+  // Classification
+  classes?: string[]
+  accuracy?: number
+  f1Score?: number
+  confusionMatrix?: number[][]
+  // Regression
+  rmse?: number
+  mae?: number
+  r2?: number
+  intercept?: number
+  coefficients?: Array<{ feature: string; coefficient: number }>
 }
 
 export type EvaluationArtifact = {
-  silhouetteScore: number
-  clusterSizeDistribution: Array<{
-    segmentId: string
-    size: number
-    ratio: number
-  }>
-  topDifferentiatingFeatures: Array<{
-    feature: string
-    importance: number
-  }>
+  taskType: TaskType
+  topDifferentiatingFeatures: Array<{ feature: string; importance: number }>
+  modelComparisons?: ModelComparison[]
+  // Clustering
+  silhouetteScore?: number
+  clusterSizeDistribution?: Array<{ segmentId: string; size: number; ratio: number }>
+  // Classification
+  accuracy?: number
+  f1Score?: number
+  confusionMatrix?: number[][]
+  classNames?: string[]
+  // Regression
+  rmse?: number
+  mae?: number
+  r2?: number
+  coefficients?: Array<{ feature: string; coefficient: number }>
 }
 
 export type InsightArtifact = {

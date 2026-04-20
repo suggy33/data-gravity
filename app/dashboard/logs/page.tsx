@@ -1,7 +1,7 @@
 "use client"
 
 import { useEffect, useMemo, useState } from "react"
-import { DashboardHeader } from "@/components/dashboard/header"
+import { DashboardHeader, DASHBOARD_REFRESH_EVENT } from "@/components/dashboard/header"
 import { Button } from "@/components/ui/button"
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card"
 import {
@@ -127,6 +127,15 @@ export default function DeploymentLogsPage() {
   useEffect(() => {
     void fetchRuns()
   }, [])
+
+  useEffect(() => {
+    const onRefresh = () => {
+      void fetchRuns()
+      if (selectedRunId) void fetchRunDetail(selectedRunId)
+    }
+    window.addEventListener(DASHBOARD_REFRESH_EVENT, onRefresh)
+    return () => window.removeEventListener(DASHBOARD_REFRESH_EVENT, onRefresh)
+  }, [selectedRunId])
 
   useEffect(() => {
     if (selectedRunId) {

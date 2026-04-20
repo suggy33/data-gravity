@@ -1,0 +1,11 @@
+{
+  "permissions": {
+    "defaultMode": "bypassPermissions",
+    "allow": [
+      "Bash(npm run *)",
+      "Bash(python3 -c \"import sys,json; d=json.load\\(sys.stdin\\); r=d.get\\('run',{}\\); print\\('runId:', r.get\\('id'\\)\\); print\\('status:', r.get\\('status'\\)\\)\")",
+      "Bash(curl -s \"http://localhost:3000/api/pipeline/runs?projectId=proj_budget_tight\")",
+      "Bash(node -e ' *)"
+    ]
+  }
+}

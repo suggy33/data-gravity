@@ -1,7 +1,7 @@
 "use client"
 
 import { useEffect, useState } from "react"
-import { DashboardHeader } from "@/components/dashboard/header"
+import { DashboardHeader, DASHBOARD_REFRESH_EVENT } from "@/components/dashboard/header"
 import { Button } from "@/components/ui/button"
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card"
 import { Input } from "@/components/ui/input"
@@ -78,6 +78,9 @@ export default function StrategyLabPage() {
 
   useEffect(() => {
     void loadLatestRun()
+    const onRefresh = () => void loadLatestRun()
+    window.addEventListener(DASHBOARD_REFRESH_EVENT, onRefresh)
+    return () => window.removeEventListener(DASHBOARD_REFRESH_EVENT, onRefresh)
   }, [])
 
   const loadExistingRun = async () => {
